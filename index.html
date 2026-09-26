@@ -1114,10 +1114,11 @@ function Chart_({ type, data, options, height = 220 }) {
   return <div className="chart-box" style={{height}}><canvas ref={ref}></canvas></div>;
 }
 
-function Dashboard({ reservas, despesas, config }) {
+function Dashboard({ reservas, despesas, config, onToggleRecebido }) {
   const anos = useAnosDisponiveis(reservas, despesas);
   const [mes, setMes] = useState(new Date().getMonth());
   const [ano, setAno] = useState(new Date().getFullYear());
+  const [modalAReceber, setModalAReceber] = useState(false);
 
   const reservasPeriodo = useMemo(
     () => reservas.filter((r) => { const [y, m] = r.data_checkin.split("-"); return Number(y) === ano && Number(m) - 1 === mes; }),
@@ -1147,17 +1148,20 @@ function Dashboard({ reservas, despesas, config }) {
 
   /* --------- Recebimentos: valor que REALMENTE entrou na conta no mês selecionado,
      com base na data prevista de recebimento — não na data da hospedagem --------- */
-  const recebidoMes = useMemo(() => {
-    let total = 0;
+  const { recebidoMes, aReceberMes, aReceberMesArr } = useMemo(() => {
+    let recebido = 0;
+    const pendentes = [];
     reservas.forEach((r) => {
       const dataRec = dataRecebimentoDe(r);
-      if (!dataRec || !isRecebida(r)) return;
+      if (!dataRec) return;
       const { ano: y, mes: m } = mesAnoDe(dataRec);
-      if (y === ano && m === mes) {
-        total += calcularValores(r.valor, r.tipo, config, r.taxa_personalizada).liquido;
-      }
+      if (y !== ano || m !== mes) return;
+      const { liquido } = calcularValores(r.valor, r.tipo, config, r.taxa_personalizada);
+      if (isRecebida(r)) recebido += liquido;
+      else pendentes.push(r);
     });
-    return total;
+    const pendenteTotal = pendentes.reduce((s, r) => s + calcularValores(r.valor, r.tipo, config, r.taxa_personalizada).liquido, 0);
+    return { recebidoMes: recebido, aReceberMes: pendenteTotal, aReceberMesArr: pendentes };
   }, [reservas, config, mes, ano]);
 
   const totalMesRecebimentos = recebidoMes - totalDespesas;
@@ -1181,14 +1185,17 @@ function Dashboard({ reservas, despesas, config }) {
         </div>
       </div>
 
-      {!hasData && recebidoMes === 0 ? (
+      {!hasData && recebidoMes === 0 && aReceberMesArr.length === 0 ? (
         <EmptyState title="Nenhum dado neste período" text="Cadastre reservas e despesas para ver o resumo financeiro aqui." />
       ) : (
         <>
           <div className="section-title">Recebimentos (mês selecionado)</div>
-          <div className="section-sub">Dinheiro que realmente entrou na conta — pela data prevista de recebimento, não pela data da hospedagem</div>
-          <div className="grid grid-3" style={{ marginBottom: 18 }}>
+          <div className="section-sub">Dinheiro que realmente entrou (ou ainda vai entrar) na conta — pela data prevista de recebimento, não pela data da hospedagem</div>
+          <div className="grid grid-4" style={{ marginBottom: 18 }}>
             <div className="card stat-card pos"><div className="label">Valor recebido no mês</div><div className="value">{brl(recebidoMes)}</div></div>
+            <div className="card stat-card clickable" onClick={() => aReceberMesArr.length && setModalAReceber(true)}>
+              <div className="label">A receber (no mês)</div><div className="value">{brl(aReceberMes)}</div>
+            </div>
             <div className="card stat-card neg"><div className="label">Despesas do mês</div><div className="value">{brl(totalDespesas)}</div></div>
             <div className="card stat-card accent"><div className="label">Total do mês</div><div className="value">{brl(totalMesRecebimentos)}</div></div>
           </div>
@@ -1248,6 +1255,15 @@ function Dashboard({ reservas, despesas, config }) {
         </>
       )}
 
+      {modalAReceber && (
+        <AReceberModal
+          reservas={aReceberMesArr}
+          config={config}
+          titulo="A receber neste mês"
+          onClose={() => setModalAReceber(false)}
+          onToggleRecebido={onToggleRecebido}
+        />
+      )}
     </div>
   );
 }
@@ -1945,7 +1961,7 @@ function App() {
           </div>
         </div>
         <div className="content">
-          {page === "dashboard" && <Dashboard reservas={reservas} despesas={despesas} config={config} />}
+          {page === "dashboard" && <Dashboard reservas={reservas} despesas={despesas} config={config} onToggleRecebido={toggleRecebido} />}
           {page === "reservas" && <Reservas reservas={reservas} config={config} onAdd={addReserva} onUpdate={updateReserva} onDelete={deleteReserva} />}
           {page === "despesas" && <Despesas despesas={despesas} categorias={config.categorias_despesas || []} onAdd={addDespesa} onUpdate={updateDespesa} onDelete={deleteDespesa} />}
           {page === "financeiro" && <Financeiro reservas={reservas} despesas={despesas} config={config} onToggleRecebido={toggleRecebido} />}
