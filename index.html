@@ -113,6 +113,7 @@
   /* ---------- Cards / tables ---------- */
   .grid{display:grid;gap:16px;}
   .grid-5{grid-template-columns:repeat(5,1fr);}
+  .grid-4{grid-template-columns:repeat(4,1fr);}
   .grid-3{grid-template-columns:repeat(3,1fr);}
   .grid-2{grid-template-columns:repeat(2,1fr);}
   .card{
@@ -128,8 +129,11 @@
   .stat-card.accent{background:var(--forest-950);border-color:var(--forest-950);}
   .stat-card.accent .label{color:rgba(246,241,228,0.6);}
   .stat-card.accent .value{color:var(--sand-50);}
+  .stat-card.clickable{cursor:pointer;transition:box-shadow .15s ease, transform .1s ease;}
+  .stat-card.clickable:hover{box-shadow:var(--shadow);transform:translateY(-1px);}
 
   .section-title{font-size:15px;font-weight:600;color:var(--forest-950);margin:0 0 12px;font-family:'Fraunces',serif;}
+  .section-sub{font-size:12.5px;color:var(--ink-500);margin:-8px 0 14px;}
 
   .flow-band{
     display:flex;align-items:stretch;gap:0;border-radius:var(--radius);overflow:hidden;border:1px solid var(--line);margin-bottom:22px;
@@ -185,6 +189,8 @@
   .pill.airbnb{background:#FDECD8;color:#A8622E;}
   .pill.booking{background:#DCEAEC;color:#2E5760;}
   .pill.particular{background:#E4EEE2;color:#2A4433;}
+  .pill.chacara{background:#E4EEE2;color:#2A4433;}
+  .pill.pessoal{background:#EAE2F2;color:#5B3A8C;}
   .row-actions{display:flex;gap:8px;}
   .icon-btn{
     background:none;border:none;cursor:pointer;padding:6px;border-radius:7px;color:var(--ink-500);
@@ -216,6 +222,7 @@
     width:100%;max-width:480px;max-height:92vh;overflow-y:auto;
     padding:24px 22px 26px;
   }
+  .modal.wide{max-width:720px;}
   .modal h3{margin:0 0 18px;font-size:19px;}
   .field{margin-bottom:15px;}
   .field label{display:block;font-size:13px;font-weight:600;color:var(--ink-700);margin-bottom:6px;}
@@ -256,7 +263,8 @@
 
   .spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,0.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
-  .loading-page{display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--ink-500);gap:10px;}
+  .loading-page{display:flex;align-items:center;justify-content:center;min-height:60vh;color:var(--ink-500);gap:10px;flex-direction:column;}
+  .loading-page .sub{font-size:12.5px;color:var(--ink-500);opacity:0.8;}
 
   .chart-card{background:var(--white);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;}
   .chart-box{position:relative;height:220px;}
@@ -267,6 +275,7 @@
     .topbar{display:flex;}
     .content{padding:18px 16px 90px;}
     .grid-5{grid-template-columns:repeat(2,1fr);}
+    .grid-4{grid-template-columns:repeat(2,1fr);}
     .grid-3{grid-template-columns:1fr;}
     .grid-2{grid-template-columns:1fr;}
     .flow-band{flex-direction:column;}
@@ -309,21 +318,15 @@ const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
 /* =========================================================================
    CONFIGURAÇÃO DO SUPABASE
-   Substitua os valores abaixo pela URL e a chave "anon public" do seu
-   projeto Supabase (Configurações do projeto → API).
    ========================================================================= */
 const SUPABASE_URL = "https://bexjtwqicndryvlrwibb.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_A55LEXvDNXtnJiwscTaYFA_joerMWqU";
 
 const isConfigured = SUPABASE_URL.startsWith("http") && SUPABASE_ANON_KEY.length > 20;
 
-/* Cliente REST minimalista para a API do Supabase (PostgREST), sem depender
-   de um pacote externo — evita problemas de carregamento de CDN. */
 const REST_URL = `${SUPABASE_URL}/rest/v1`;
 const AUTH_URL = `${SUPABASE_URL}/auth/v1`;
 
-/* Token de sessão do usuário logado — fica só na memória (não usa localStorage),
-   então é preciso logar de novo a cada vez que a página é recarregada. */
 let ACCESS_TOKEN = null;
 
 const restHeaders = (extra = {}) => ({
@@ -358,6 +361,22 @@ async function sbUpdate(table, id, payload) {
 async function sbDelete(table, id) {
   const res = await fetch(`${REST_URL}/${table}?id=eq.${id}`, { method: "DELETE", headers: restHeaders() });
   if (!res.ok) throw new Error(await res.text());
+}
+
+/* Repete uma chamada assíncrona algumas vezes antes de desistir — protege
+   contra falhas passageiras (ex.: banco "acordando" após ficar inativo),
+   que antes exigiam clicar em "Tentar novamente" manualmente. */
+async function withRetry(fn, retries = 2, delayMs = 1000) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < retries) await new Promise((res) => setTimeout(res, delayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 /* ---------------------------- Autenticação (Supabase Auth) ---------------------------- */
@@ -411,13 +430,15 @@ async function signOutRemote(accessToken) {
 
 
 /* =========================================================================
-   SCRIPT SQL — cole no SQL Editor do Supabase para criar as tabelas
+   SCRIPT SQL — cole no SQL Editor do Supabase para criar/atualizar as tabelas
    ========================================================================= */
 const SQL_SCRIPT = `-- Refúgio das Araras — estrutura do banco de dados
 -- Cole este script inteiro no SQL Editor do Supabase e execute (Run).
+-- Este script pode ser executado novamente com segurança em um banco já existente.
 
 create table if not exists reservas (
   id uuid primary key default gen_random_uuid(),
+  cliente text,
   data_checkin date not null,
   horario_checkin time not null,
   data_checkout date not null,
@@ -426,17 +447,27 @@ create table if not exists reservas (
   valor numeric(10,2) not null check (valor >= 0),
   taxa_personalizada double precision,
   concluida boolean not null default false,
+  data_prevista_recebimento date,
+  recebido boolean not null default false,
   created_at timestamptz default now()
 );
+
+-- Colunas novas em bancos já existentes (não faz nada se já existirem)
+alter table reservas add column if not exists cliente text;
+alter table reservas add column if not exists data_prevista_recebimento date;
+alter table reservas add column if not exists recebido boolean not null default false;
 
 create table if not exists despesas (
   id uuid primary key default gen_random_uuid(),
   data date not null,
   descricao text not null,
   categoria text not null,
+  tipo text not null default 'chacara' check (tipo in ('chacara','pessoal')),
   valor numeric(10,2) not null check (valor >= 0),
   created_at timestamptz default now()
 );
+
+alter table despesas add column if not exists tipo text not null default 'chacara';
 
 create table if not exists configuracoes (
   id int primary key default 1,
@@ -456,6 +487,9 @@ alter table reservas enable row level security;
 alter table despesas enable row level security;
 alter table configuracoes enable row level security;
 
+drop policy if exists "acesso_reservas" on reservas;
+drop policy if exists "acesso_despesas" on despesas;
+drop policy if exists "acesso_configuracoes" on configuracoes;
 create policy "acesso_reservas" on reservas for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "acesso_despesas" on despesas for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "acesso_configuracoes" on configuracoes for all using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
@@ -493,6 +527,22 @@ function isConcluida(r) {
   return !!r.concluida || (!!r.data_checkout && r.data_checkout <= todayISO());
 }
 
+/* Data usada para saber QUANDO o dinheiro entra na conta. Reservas antigas,
+   cadastradas antes deste campo existir, caem de volta na data de checkout. */
+function dataRecebimentoDe(r) {
+  return r.data_prevista_recebimento || r.data_checkout;
+}
+/* Uma reserva é considerada "recebida" quando marcada manualmente, ou quando
+   a data prevista de recebimento já chegou. */
+function isRecebida(r) {
+  const dataRec = dataRecebimentoDe(r);
+  return !!r.recebido || (!!dataRec && dataRec <= todayISO());
+}
+function mesAnoDe(dataISO) {
+  const [y, m] = dataISO.split("-");
+  return { ano: Number(y), mes: Number(m) - 1 };
+}
+
 function taxaParaTipo(tipo, config, taxaPersonalizada) {
   if (taxaPersonalizada !== null && taxaPersonalizada !== undefined && taxaPersonalizada !== "") {
     return Number(taxaPersonalizada);
@@ -525,6 +575,7 @@ const Icon = {
   empty: (p) => <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" {...p}><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2M3 12h18"/></svg>,
   x: (p) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" {...p}><path d="M18 6L6 18M6 6l18 12"/></svg>,
   menu: (p) => <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" {...p}><path d="M3 6h18M3 12h18M3 18h18"/></svg>,
+  clock: (p) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" {...p}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>,
 };
 
 /* ---------------------------- Toast ---------------------------- */
@@ -614,7 +665,7 @@ function LoginScreen({ onLogin }) {
     if (!email || !password) { setError("Preencha e-mail e senha."); return; }
     setLoading(true);
     try {
-      const data = await signIn(email.trim(), password);
+      const data = await withRetry(() => signIn(email.trim(), password), 1, 800);
       onLogin(data);
     } catch (err) {
       setError(err.message || "Não foi possível entrar.");
@@ -765,8 +816,8 @@ function useAnosDisponiveis(reservas, despesas) {
 function ReservaModal({ initial, config, onClose, onSave }) {
   const [form, setForm] = useState(
     initial
-      ? { ...initial, taxa_personalizada: initial.taxa_personalizada ?? "" }
-      : { data_checkin: todayISO(), horario_checkin: "14:00", data_checkout: "", horario_checkout: "", tipo: "airbnb", valor: "", taxa_personalizada: "", concluida: false }
+      ? { ...initial, taxa_personalizada: initial.taxa_personalizada ?? "", data_prevista_recebimento: initial.data_prevista_recebimento || "", cliente: initial.cliente || "" }
+      : { cliente: "", data_checkin: todayISO(), horario_checkin: "14:00", data_checkout: "", horario_checkout: "", tipo: "airbnb", valor: "", taxa_personalizada: "", concluida: false, data_prevista_recebimento: "", recebido: false }
   );
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
@@ -800,6 +851,9 @@ function ReservaModal({ initial, config, onClose, onSave }) {
     if (form.taxa_personalizada !== "" && form.taxa_personalizada !== null && form.taxa_personalizada !== undefined) {
       if (isNaN(form.taxa_personalizada) || Number(form.taxa_personalizada) < 0) e.taxa_personalizada = "A taxa não pode ser negativa.";
     }
+    if (form.data_prevista_recebimento && form.data_checkin && form.data_prevista_recebimento < form.data_checkin) {
+      e.data_prevista_recebimento = "A data de recebimento costuma ser igual ou posterior ao check-in.";
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -809,9 +863,11 @@ function ReservaModal({ initial, config, onClose, onSave }) {
     setSaving(true);
     await onSave({
       ...form,
+      cliente: form.cliente ? form.cliente.trim() : null,
       horario_checkout: form.horario_checkout || null,
       valor: Number(form.valor),
       taxa_personalizada: form.taxa_personalizada === "" ? null : Number(form.taxa_personalizada),
+      data_prevista_recebimento: form.data_prevista_recebimento || null,
     });
     setSaving(false);
   };
@@ -821,6 +877,10 @@ function ReservaModal({ initial, config, onClose, onSave }) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>{initial ? "Editar reserva" : "Nova reserva"}</h3>
 
+        <div className="field">
+          <label>Cliente — opcional</label>
+          <input type="text" placeholder="Nome do hóspede" value={form.cliente} onChange={(e) => setForm({ ...form, cliente: e.target.value })} />
+        </div>
         <div className="field">
           <label>Data de check-in</label>
           <input type="date" value={form.data_checkin} onChange={(e) => setForm({ ...form, data_checkin: e.target.value })} />
@@ -852,10 +912,10 @@ function ReservaModal({ initial, config, onClose, onSave }) {
           <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
             <input type="checkbox" style={{ width: "auto" }} checked={!!form.concluida}
               onChange={(e) => setForm({ ...form, concluida: e.target.checked })} />
-            Marcar como concluída manualmente
+            Marcar hospedagem como concluída manualmente
           </label>
           <div style={{ fontSize: 12.5, color: "var(--ink-500)", marginTop: 5 }}>
-            A reserva também é marcada como concluída sozinha assim que a data de check-out chega — só use isto para concluir antes da hora.
+            A hospedagem também é marcada como concluída sozinha assim que a data de check-out chega — só use isto para concluir antes da hora.
           </div>
         </div>
         <div className="field">
@@ -882,6 +942,25 @@ function ReservaModal({ initial, config, onClose, onSave }) {
           </div>
         </div>
 
+        <div className="field" style={{ borderTop: "1px solid var(--line)", paddingTop: 15 }}>
+          <label>Data prevista para receber — opcional</label>
+          <input type="date" value={form.data_prevista_recebimento || ""} onChange={(e) => setForm({ ...form, data_prevista_recebimento: e.target.value })} />
+          {errors.data_prevista_recebimento && <div className="field-error">{errors.data_prevista_recebimento}</div>}
+          <div style={{ fontSize: 12.5, color: "var(--ink-500)", marginTop: 5 }}>
+            Data em que o dinheiro realmente cai na conta (pode ser diferente do check-in/checkout). Se deixar em branco, o sistema usa a data de check-out como estimativa.
+          </div>
+        </div>
+        <div className="field">
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input type="checkbox" style={{ width: "auto" }} checked={!!form.recebido}
+              onChange={(e) => setForm({ ...form, recebido: e.target.checked })} />
+            Marcar como recebido manualmente
+          </label>
+          <div style={{ fontSize: 12.5, color: "var(--ink-500)", marginTop: 5 }}>
+            O valor também passa para "Recebido" sozinho assim que a data prevista de recebimento chega — só use isto para confirmar antes da hora (ou depois, se o pagamento atrasar).
+          </div>
+        </div>
+
         <div className="taxa-preview">
           <div><span>Valor bruto</span><span>{brl(form.valor || 0)}</span></div>
           <div><span>Taxa ({pct(preview.taxaPerc)})</span><span>{brl(preview.taxaValor)}</span></div>
@@ -901,7 +980,7 @@ function ReservaModal({ initial, config, onClose, onSave }) {
 
 /* ---------------------------- Despesa Modal ---------------------------- */
 function DespesaModal({ initial, categorias, onClose, onSave }) {
-  const [form, setForm] = useState(initial || { data: todayISO(), descricao: "", categoria: categorias[0] || "Outros", valor: "" });
+  const [form, setForm] = useState(initial || { data: todayISO(), descricao: "", categoria: categorias[0] || "Outros", tipo: "chacara", valor: "" });
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
 
@@ -939,6 +1018,13 @@ function DespesaModal({ initial, categorias, onClose, onSave }) {
           {errors.descricao && <div className="field-error">{errors.descricao}</div>}
         </div>
         <div className="field">
+          <label>Despesa da Chácara ou Pessoal?</label>
+          <select value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
+            <option value="chacara">Despesa da Chácara</option>
+            <option value="pessoal">Despesa Pessoal</option>
+          </select>
+        </div>
+        <div className="field">
           <label>Categoria</label>
           <select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
             {categorias.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -955,6 +1041,60 @@ function DespesaModal({ initial, categorias, onClose, onSave }) {
           <button className="btn block" onClick={submit} disabled={saving}>
             {saving ? <span className="spinner"/> : "Salvar despesa"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------- Modal "A receber" ---------------------------- */
+function AReceberModal({ reservas, config, titulo, onClose, onToggleRecebido }) {
+  const tipoLabel = { airbnb: "Airbnb", booking: "Booking", particular: "Particular" };
+  const ordenadas = useMemo(
+    () => [...reservas].sort((a, b) => (dataRecebimentoDe(a) > dataRecebimentoDe(b) ? 1 : -1)),
+    [reservas]
+  );
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal wide" onClick={(e) => e.stopPropagation()}>
+        <h3>{titulo}</h3>
+        {ordenadas.length === 0 ? (
+          <EmptyState title="Nada por aqui" text="Não há reservas nessa condição." />
+        ) : (
+          <div className="table-wrap">
+            <div className="table-scroll">
+              <table>
+                <thead><tr><th>Cliente</th><th>Plataforma</th><th>Valor</th><th>Hospedagem</th><th>Recebimento</th><th>Status</th></tr></thead>
+                <tbody>
+                  {ordenadas.map((r) => {
+                    const { liquido } = calcularValores(r.valor, r.tipo, config, r.taxa_personalizada);
+                    const recebida = isRecebida(r);
+                    return (
+                      <tr key={r.id}>
+                        <td data-label="Cliente">{r.cliente || "—"}</td>
+                        <td data-label="Plataforma"><span className={`pill ${r.tipo}`}>{tipoLabel[r.tipo]}</span></td>
+                        <td data-label="Valor"><strong>{brl(liquido)}</strong></td>
+                        <td data-label="Hospedagem">{fmtDate(r.data_checkin)} – {fmtDate(r.data_checkout)}</td>
+                        <td data-label="Recebimento">{fmtDate(dataRecebimentoDe(r))}</td>
+                        <td data-label="Status">
+                          <button
+                            className="pill"
+                            style={{ border: "none", cursor: "pointer", background: recebida ? "#DCEEDD" : "#F3EFE2", color: recebida ? "#2A4433" : "#7A7256" }}
+                            onClick={() => onToggleRecebido(r)}
+                          >
+                            {recebida ? "Recebido" : "A receber"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        <div className="modal-actions">
+          <button className="btn secondary block" onClick={onClose}>Fechar</button>
         </div>
       </div>
     </div>
@@ -997,24 +1137,30 @@ function Dashboard({ reservas, despesas, config }) {
   }, { bruto: 0, taxas: 0, liquido: 0 });
 
   const totais = calc(reservasPeriodo);
-  const totalDespesas = despesasPeriodo.reduce((s, d) => s + Number(d.valor), 0);
+
+  const despesasChacara = despesasPeriodo.filter((d) => (d.tipo || "chacara") === "chacara").reduce((s, d) => s + Number(d.valor), 0);
+  const despesasPessoais = despesasPeriodo.filter((d) => d.tipo === "pessoal").reduce((s, d) => s + Number(d.valor), 0);
+  const totalDespesas = despesasChacara + despesasPessoais;
   const saldoFinal = totais.liquido - totalDespesas;
 
   const porTipo = { airbnb: calc(reservasPeriodo.filter((r) => r.tipo === "airbnb")), booking: calc(reservasPeriodo.filter((r) => r.tipo === "booking")), particular: calc(reservasPeriodo.filter((r) => r.tipo === "particular")) };
 
-  const evolucao = useMemo(() => {
-    const meses = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(ano, mes - i, 1);
-      const y = d.getFullYear(), m = d.getMonth();
-      const rs = reservas.filter((r) => { const [ry, rm] = r.data_checkin.split("-"); return Number(ry) === y && Number(rm) - 1 === m; });
-      const ds = despesas.filter((x) => { const [ry, rm] = x.data.split("-"); return Number(ry) === y && Number(rm) - 1 === m; });
-      const rc = calc(rs);
-      const desp = ds.reduce((s, x) => s + Number(x.valor), 0);
-      meses.push({ label: `${MESES[m].slice(0,3)}/${String(y).slice(2)}`, saldo: rc.liquido - desp });
-    }
-    return meses;
-  }, [reservas, despesas, mes, ano, config]);
+  /* --------- Recebimentos: valor que REALMENTE entrou na conta no mês selecionado,
+     com base na data prevista de recebimento — não na data da hospedagem --------- */
+  const recebidoMes = useMemo(() => {
+    let total = 0;
+    reservas.forEach((r) => {
+      const dataRec = dataRecebimentoDe(r);
+      if (!dataRec || !isRecebida(r)) return;
+      const { ano: y, mes: m } = mesAnoDe(dataRec);
+      if (y === ano && m === mes) {
+        total += calcularValores(r.valor, r.tipo, config, r.taxa_personalizada).liquido;
+      }
+    });
+    return total;
+  }, [reservas, config, mes, ano]);
+
+  const totalMesRecebimentos = recebidoMes - totalDespesas;
 
   const hasData = reservasPeriodo.length > 0 || despesasPeriodo.length > 0;
 
@@ -1035,10 +1181,26 @@ function Dashboard({ reservas, despesas, config }) {
         </div>
       </div>
 
-      {!hasData ? (
+      {!hasData && recebidoMes === 0 ? (
         <EmptyState title="Nenhum dado neste período" text="Cadastre reservas e despesas para ver o resumo financeiro aqui." />
       ) : (
         <>
+          <div className="section-title">Recebimentos (mês selecionado)</div>
+          <div className="section-sub">Dinheiro que realmente entrou na conta — pela data prevista de recebimento, não pela data da hospedagem</div>
+          <div className="grid grid-3" style={{ marginBottom: 18 }}>
+            <div className="card stat-card pos"><div className="label">Valor recebido no mês</div><div className="value">{brl(recebidoMes)}</div></div>
+            <div className="card stat-card neg"><div className="label">Despesas do mês</div><div className="value">{brl(totalDespesas)}</div></div>
+            <div className="card stat-card accent"><div className="label">Total do mês</div><div className="value">{brl(totalMesRecebimentos)}</div></div>
+          </div>
+
+          <div className="section-title">Despesas do mês, por tipo</div>
+          <div className="grid grid-3" style={{ marginBottom: 22 }}>
+            <div className="card stat-card"><div className="label">Despesas da Chácara</div><div className="value">{brl(despesasChacara)}</div></div>
+            <div className="card stat-card"><div className="label">Despesas Pessoais</div><div className="value">{brl(despesasPessoais)}</div></div>
+            <div className="card stat-card neg"><div className="label">Total de Despesas</div><div className="value">{brl(totalDespesas)}</div></div>
+          </div>
+
+          <div className="section-title">Visão por hospedagem (data de check-in)</div>
           <div className="grid grid-5" style={{ marginBottom: 18 }}>
             <div className="card stat-card"><div className="label">Receita bruta</div><div className="value">{brl(totais.bruto)}</div></div>
             <div className="card stat-card"><div className="label">Total de taxas</div><div className="value">{brl(totais.taxas)}</div></div>
@@ -1060,7 +1222,9 @@ function Dashboard({ reservas, despesas, config }) {
             <div className="flow-seg"><div className="flow-label">Saldo</div><div className="flow-value">{brl(saldoFinal)}</div></div>
           </div>
 
-          <div className="grid grid-2">
+          {hasData && (
+          <>
+          <div className="grid grid-2" style={{ marginTop: 16 }}>
             <div className="chart-card">
               <div className="section-title">Receita por tipo de reserva</div>
               <Chart_ type="doughnut" data={{
@@ -1079,16 +1243,11 @@ function Dashboard({ reservas, despesas, config }) {
               }} options={{ maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { font: { family: "Inter", size: 12 } } } }, scales: { y: { beginAtZero: true } } }} />
             </div>
           </div>
-
-          <div className="chart-card" style={{ marginTop: 16 }}>
-            <div className="section-title">Evolução do saldo (últimos 6 meses)</div>
-            <Chart_ type="line" data={{
-              labels: evolucao.map((e) => e.label),
-              datasets: [{ label: "Saldo", data: evolucao.map((e) => e.saldo), borderColor: "#C79A3E", backgroundColor: "rgba(199,154,62,0.15)", fill: true, tension: 0.35, pointBackgroundColor: "#C79A3E" }]
-            }} options={{ maintainAspectRatio: false, plugins: { legend: { display: false } } }} height={230} />
-          </div>
+          </>
+          )}
         </>
       )}
+
     </div>
   );
 }
@@ -1129,6 +1288,7 @@ function Reservas({ reservas, config, onAdd, onUpdate, onDelete }) {
   };
 
   const alternarConcluida = (r) => onUpdate(r.id, { concluida: !r.concluida });
+  const alternarRecebido = (r) => onUpdate(r.id, { recebido: !r.recebido });
 
   const tipoLabel = { airbnb: "Airbnb", booking: "Booking", particular: "Particular" };
 
@@ -1177,12 +1337,14 @@ function Reservas({ reservas, config, onAdd, onUpdate, onDelete }) {
         ) : (
           <div className="table-scroll">
             <table>
-              <thead><tr><th>Check-in</th><th>Check-out</th><th>Tipo</th><th>Status</th><th>Valor bruto</th><th>Taxa</th><th>Valor líquido</th><th>Ações</th></tr></thead>
+              <thead><tr><th>Cliente</th><th>Check-in</th><th>Check-out</th><th>Tipo</th><th>Status</th><th>Valor bruto</th><th>Taxa</th><th>Valor líquido</th><th>Recebimento</th><th>Ações</th></tr></thead>
               <tbody>
                 {filtradas.map((r) => {
                   const { taxaValor, liquido } = calcularValores(r.valor, r.tipo, config, r.taxa_personalizada);
+                  const recebida = isRecebida(r);
                   return (
                     <tr key={r.id}>
+                      <td data-label="Cliente">{r.cliente || "—"}</td>
                       <td data-label="Check-in">{fmtDate(r.data_checkin)}{r.horario_checkin ? ` · ${r.horario_checkin.slice(0, 5)}` : ""}</td>
                       <td data-label="Check-out">{r.data_checkout ? fmtDate(r.data_checkout) : "—"}{r.horario_checkout ? ` · ${r.horario_checkout.slice(0, 5)}` : ""}</td>
                       <td data-label="Tipo"><span className={`pill ${r.tipo}`}>{tipoLabel[r.tipo]}</span></td>
@@ -1199,6 +1361,16 @@ function Reservas({ reservas, config, onAdd, onUpdate, onDelete }) {
                       <td data-label="Valor bruto">{brl(r.valor)}</td>
                       <td data-label="Taxa">{brl(taxaValor)}</td>
                       <td data-label="Valor líquido"><strong>{brl(liquido)}</strong></td>
+                      <td data-label="Recebimento">
+                        <button
+                          className="pill"
+                          style={{ border: "none", cursor: "pointer", background: recebida ? "#DCEEDD" : "#F3EFE2", color: recebida ? "#2A4433" : "#7A7256" }}
+                          onClick={() => alternarRecebido(r)}
+                          title={`Previsto: ${fmtDate(dataRecebimentoDe(r))} — clique para alternar`}
+                        >
+                          {recebida ? "Recebido" : "A receber"}
+                        </button>
+                      </td>
                       <td data-label="Ações">
                         <div className="row-actions">
                           <button className="icon-btn" onClick={() => { setEditing(r); setModalOpen(true); }}><Icon.edit/></button>
@@ -1243,6 +1415,7 @@ function Despesas({ despesas, categorias, onAdd, onUpdate, onDelete }) {
   const [fMeses, setFMeses] = useState([]);
   const [fAno, setFAno] = useState("todos");
   const [fCat, setFCat] = useState("todos");
+  const [fTipo, setFTipo] = useState("todos");
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [toDelete, setToDelete] = useState(null);
@@ -1253,10 +1426,13 @@ function Despesas({ despesas, categorias, onAdd, onUpdate, onDelete }) {
       .filter((d) => (fMeses.length === 0 || fMeses.includes(Number(d.data.split("-")[1]) - 1)))
       .filter((d) => (fAno === "todos" || Number(d.data.split("-")[0]) === Number(fAno)))
       .filter((d) => (fCat === "todos" || d.categoria === fCat))
+      .filter((d) => (fTipo === "todos" || (d.tipo || "chacara") === fTipo))
       .sort((a, b) => (a.data > b.data ? 1 : -1));
-  }, [despesas, fMeses, fAno, fCat]);
+  }, [despesas, fMeses, fAno, fCat, fTipo]);
 
   const total = filtradas.reduce((s, d) => s + Number(d.valor), 0);
+  const totalChacara = filtradas.filter((d) => (d.tipo || "chacara") === "chacara").reduce((s, d) => s + Number(d.valor), 0);
+  const totalPessoal = filtradas.filter((d) => d.tipo === "pessoal").reduce((s, d) => s + Number(d.valor), 0);
 
   const salvar = async (dados) => {
     if (editing) await onUpdate(editing.id, dados);
@@ -1271,12 +1447,14 @@ function Despesas({ despesas, categorias, onAdd, onUpdate, onDelete }) {
     setToDelete(null);
   };
 
+  const tipoLabel = { chacara: "Chácara", pessoal: "Pessoal" };
+
   return (
     <div>
       <div className="page-header">
         <div>
           <h1>Despesas</h1>
-          <div className="page-sub">Controle de gastos do Refúgio das Araras</div>
+          <div className="page-sub">Controle de gastos da Chácara e despesas pessoais</div>
         </div>
         <button className="btn desktop-add" onClick={() => { setEditing(null); setModalOpen(true); }}>
           <Icon.plus /> Adicionar despesa
@@ -1293,6 +1471,13 @@ function Despesas({ despesas, categorias, onAdd, onUpdate, onDelete }) {
             {anos.map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
         </div>
+        <div><label>Tipo</label>
+          <select value={fTipo} onChange={(e) => setFTipo(e.target.value)}>
+            <option value="todos">Todas</option>
+            <option value="chacara">Chácara</option>
+            <option value="pessoal">Pessoal</option>
+          </select>
+        </div>
         <div><label>Categoria</label>
           <select value={fCat} onChange={(e) => setFCat(e.target.value)}>
             <option value="todos">Todas</option>
@@ -1307,12 +1492,13 @@ function Despesas({ despesas, categorias, onAdd, onUpdate, onDelete }) {
         ) : (
           <div className="table-scroll">
             <table>
-              <thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Valor</th><th>Ações</th></tr></thead>
+              <thead><tr><th>Data</th><th>Descrição</th><th>Tipo</th><th>Categoria</th><th>Valor</th><th>Ações</th></tr></thead>
               <tbody>
                 {filtradas.map((d) => (
                   <tr key={d.id}>
                     <td data-label="Data">{fmtDate(d.data)}</td>
                     <td data-label="Descrição">{d.descricao}</td>
+                    <td data-label="Tipo"><span className={`pill ${(d.tipo || "chacara") === "pessoal" ? "pessoal" : "chacara"}`}>{tipoLabel[d.tipo || "chacara"]}</span></td>
                     <td data-label="Categoria"><span className="pill particular">{d.categoria}</span></td>
                     <td data-label="Valor">{brl(d.valor)}</td>
                     <td data-label="Ações">
@@ -1328,8 +1514,16 @@ function Despesas({ despesas, categorias, onAdd, onUpdate, onDelete }) {
           </div>
         )}
         {filtradas.length > 0 && (
-          <div style={{ padding: "14px 20px", borderTop: "1px solid var(--line)", display: "flex", justifyContent: "space-between", fontWeight: 700, fontFamily: "Fraunces, serif" }}>
-            <span>Total de despesas do período</span><span>{brl(total)}</span>
+          <div style={{ padding: "14px 20px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 6, fontFamily: "Fraunces, serif" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, color: "var(--ink-500)", fontFamily: "Inter, sans-serif" }}>
+              <span>Despesas da Chácara</span><span>{brl(totalChacara)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, color: "var(--ink-500)", fontFamily: "Inter, sans-serif" }}>
+              <span>Despesas Pessoais</span><span>{brl(totalPessoal)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+              <span>Total do período</span><span>{brl(total)}</span>
+            </div>
           </div>
         )}
       </div>
@@ -1358,9 +1552,10 @@ function Despesas({ despesas, categorias, onAdd, onUpdate, onDelete }) {
 }
 
 /* ---------------------------- Financeiro ---------------------------- */
-function Financeiro({ reservas, despesas, config }) {
+function Financeiro({ reservas, despesas, config, onToggleRecebido }) {
   const anos = useAnosDisponiveis(reservas, despesas);
   const [ano, setAno] = useState(new Date().getFullYear());
+  const [modalAberto, setModalAberto] = useState(false);
 
   const calc = (lista) => lista.reduce((acc, r) => {
     const { taxaValor, liquido } = calcularValores(r.valor, r.tipo, config, r.taxa_personalizada);
@@ -1377,8 +1572,21 @@ function Financeiro({ reservas, despesas, config }) {
     particular: calc(reservasAno.filter((r) => r.tipo === "particular")),
   };
   const totalReceitasLiquidas = porTipo.airbnb.liquido + porTipo.booking.liquido + porTipo.particular.liquido;
-  const totalDespesasAno = despesasAno.reduce((s, d) => s + Number(d.valor), 0);
+  const despesasChacaraAno = despesasAno.filter((d) => (d.tipo || "chacara") === "chacara").reduce((s, d) => s + Number(d.valor), 0);
+  const despesasPessoaisAno = despesasAno.filter((d) => d.tipo === "pessoal").reduce((s, d) => s + Number(d.valor), 0);
+  const totalDespesasAno = despesasChacaraAno + despesasPessoaisAno;
   const saldoFinal = totalReceitasLiquidas - totalDespesasAno;
+
+  /* Entrou / A receber / Próximos recebimentos — baseado na data prevista de recebimento */
+  const naoRecebidas = useMemo(() => reservas.filter((r) => !isRecebida(r)), [reservas]);
+  const entrouNoAno = useMemo(() => reservas
+    .filter((r) => isRecebida(r) && Number(dataRecebimentoDe(r).slice(0, 4)) === ano)
+    .reduce((s, r) => s + calcularValores(r.valor, r.tipo, config, r.taxa_personalizada).liquido, 0), [reservas, config, ano]);
+  const totalAReceber = useMemo(() => naoRecebidas
+    .reduce((s, r) => s + calcularValores(r.valor, r.tipo, config, r.taxa_personalizada).liquido, 0), [naoRecebidas, config]);
+  const proximosRecebimentos = useMemo(() =>
+    [...naoRecebidas].sort((a, b) => (dataRecebimentoDe(a) > dataRecebimentoDe(b) ? 1 : -1)).slice(0, 8),
+    [naoRecebidas]);
 
   const resumoMensal = MESES.map((nome, i) => {
     const rs = reservasAno.filter((r) => Number(r.data_checkin.split("-")[1]) - 1 === i);
@@ -1387,6 +1595,8 @@ function Financeiro({ reservas, despesas, config }) {
     const desp = ds.reduce((s, d) => s + Number(d.valor), 0);
     return { nome, receitas: rc.bruto, taxas: rc.taxas, despesas: desp, saldo: rc.liquido - desp };
   });
+
+  const tipoLabel = { airbnb: "Airbnb", booking: "Booking", particular: "Particular" };
 
   return (
     <div>
@@ -1402,6 +1612,40 @@ function Financeiro({ reservas, despesas, config }) {
         </div>
       </div>
 
+      <div className="section-title">Recebimentos</div>
+      <div className="section-sub">Com base na data prevista de recebimento — não na data da hospedagem</div>
+      <div className="grid grid-3" style={{ marginBottom: 22 }}>
+        <div className="card stat-card pos"><div className="label">Entrou no ano ({ano})</div><div className="value">{brl(entrouNoAno)}</div></div>
+        <div className="card stat-card clickable" onClick={() => naoRecebidas.length && setModalAberto(true)}>
+          <div className="label">A receber (todas as pendências)</div><div className="value">{brl(totalAReceber)}</div>
+        </div>
+        <div className="card stat-card accent"><div className="label">Saldo final do ano</div><div className="value">{brl(saldoFinal)}</div></div>
+      </div>
+
+      {proximosRecebimentos.length > 0 && (
+        <div className="table-wrap" style={{ marginBottom: 26 }}>
+          <div style={{ padding: "14px 20px 4px", fontSize: 13, fontWeight: 600, color: "var(--ink-700)" }}>Próximos recebimentos</div>
+          <div className="table-scroll">
+            <table>
+              <thead><tr><th>Cliente</th><th>Plataforma</th><th>Valor</th><th>Previsto para</th></tr></thead>
+              <tbody>
+                {proximosRecebimentos.map((r) => {
+                  const { liquido } = calcularValores(r.valor, r.tipo, config, r.taxa_personalizada);
+                  return (
+                    <tr key={r.id}>
+                      <td data-label="Cliente">{r.cliente || "—"}</td>
+                      <td data-label="Plataforma"><span className={`pill ${r.tipo}`}>{tipoLabel[r.tipo]}</span></td>
+                      <td data-label="Valor"><strong>{brl(liquido)}</strong></td>
+                      <td data-label="Previsto para">{fmtDate(dataRecebimentoDe(r))}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="section-title">Receitas por origem</div>
       <div className="grid grid-3" style={{ marginBottom: 22 }}>
         {[["Airbnb", porTipo.airbnb], ["Booking", porTipo.booking], ["Particular", porTipo.particular]].map(([nome, v]) => (
@@ -1414,6 +1658,13 @@ function Financeiro({ reservas, despesas, config }) {
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="section-title">Despesas por tipo</div>
+      <div className="grid grid-3" style={{ marginBottom: 22 }}>
+        <div className="card stat-card"><div className="label">Despesas da Chácara</div><div className="value">{brl(despesasChacaraAno)}</div></div>
+        <div className="card stat-card"><div className="label">Despesas Pessoais</div><div className="value">{brl(despesasPessoaisAno)}</div></div>
+        <div className="card stat-card neg"><div className="label">Total de Despesas</div><div className="value">{brl(totalDespesasAno)}</div></div>
       </div>
 
       <div className="flow-band" style={{ marginBottom: 26 }}>
@@ -1441,6 +1692,16 @@ function Financeiro({ reservas, despesas, config }) {
           </table>
         </div>
       </div>
+
+      {modalAberto && (
+        <AReceberModal
+          reservas={naoRecebidas}
+          config={config}
+          titulo="Tudo o que está a receber"
+          onClose={() => setModalAberto(false)}
+          onToggleRecebido={onToggleRecebido}
+        />
+      )}
     </div>
   );
 }
@@ -1554,11 +1815,14 @@ function App() {
     setLoading(true);
     setLoadError(null);
     try {
-      const [r, d, c] = await Promise.all([
+      // withRetry protege contra falhas passageiras (ex.: o banco "acordando"
+      // depois de um período sem uso), que antes exigiam clicar em "Tentar
+      // novamente" manualmente logo após o login.
+      const [r, d, c] = await withRetry(() => Promise.all([
         sbSelect("reservas"),
         sbSelect("despesas"),
         sbSelect("configuracoes", "&id=eq.1"),
-      ]);
+      ]), 2, 1000);
       const reservasNormalizadas = (r || []).map((row) => ({
         ...row,
         data_checkin: row.data_checkin || row.data || todayISO(),
@@ -1597,7 +1861,7 @@ function App() {
     if (!isConfigured) { setRestaurandoSessao(false); return; }
     const salva = lerSessaoLocal();
     if (!salva || !salva.refresh_token) { setRestaurandoSessao(false); return; }
-    refreshSession(salva.refresh_token)
+    withRetry(() => refreshSession(salva.refresh_token), 2, 1000)
       .then((data) => { handleLogin(data); })
       .catch(() => { limparSessaoLocal(); })
       .finally(() => setRestaurandoSessao(false));
@@ -1620,7 +1884,7 @@ function App() {
       <div className="setup-wrap">
         <div className="setup-card">
           <h1>Não foi possível conectar</h1>
-          <p>O painel não conseguiu carregar os dados do Supabase. Isso costuma acontecer quando o script SQL ainda não foi executado, ou quando a URL/chave estão incorretas.</p>
+          <p>O painel tentou algumas vezes automaticamente, mas não conseguiu carregar os dados do Supabase. Isso costuma acontecer quando o script SQL ainda não foi executado, quando a URL/chave estão incorretas, ou quando a conexão com a internet caiu.</p>
           {loadError && <div className="sql-box" style={{ fontSize: 12.5 }}>{loadError}</div>}
           <button className="btn block" onClick={carregarTudo} style={{ marginTop: 16 }}>Tentar novamente</button>
           <button className="btn secondary block" onClick={handleLogout} style={{ marginTop: 10 }}>Sair</button>
@@ -1660,6 +1924,11 @@ function App() {
     catch (e) { showToast("Erro ao salvar configurações.", "error"); }
   };
 
+  const toggleRecebido = async (r) => {
+    try { await sbUpdate("reservas", r.id, { recebido: !r.recebido }); carregarTudo(); }
+    catch (e) { showToast("Erro ao atualizar o recebimento.", "error"); }
+  };
+
   const pageTitle = NAV_ITEMS.find((n) => n.id === page)?.label || "";
 
   return (
@@ -1679,7 +1948,7 @@ function App() {
           {page === "dashboard" && <Dashboard reservas={reservas} despesas={despesas} config={config} />}
           {page === "reservas" && <Reservas reservas={reservas} config={config} onAdd={addReserva} onUpdate={updateReserva} onDelete={deleteReserva} />}
           {page === "despesas" && <Despesas despesas={despesas} categorias={config.categorias_despesas || []} onAdd={addDespesa} onUpdate={updateDespesa} onDelete={deleteDespesa} />}
-          {page === "financeiro" && <Financeiro reservas={reservas} despesas={despesas} config={config} />}
+          {page === "financeiro" && <Financeiro reservas={reservas} despesas={despesas} config={config} onToggleRecebido={toggleRecebido} />}
           {page === "config" && <Configuracoes config={config} onUpdateConfig={updateConfig} showToast={showToast} />}
         </div>
       </div>
